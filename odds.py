@@ -11,7 +11,6 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
-    TimeoutException,
     StaleElementReferenceException,
     ElementClickInterceptedException,
 )
@@ -25,7 +24,7 @@ DB_CONFIG = {
     "port":     5432,
     "dbname":   "sportsbetting",
     "user":     "postgres",
-    "password": "q1w2e3",
+    "password": "q1w2e3",     # <-- your current password
 }
 SCHEMA = "bettingschema"
 TABLE  = "odds"
@@ -34,14 +33,15 @@ TABLE  = "odds"
 @dataclass
 class LeagueConfig:
     country: str              # 'brazil' | 'england' | 'spain'
+    league_name: str          # 'Serie A Betano' | 'Premier League' | 'LaLiga'
     base: str                 # e.g. https://www.oddsportal.com/football/brazil/
     kind: str                 # 'single_year' | 'two_year'
     comp_slug: str            # 'serie-a' | 'premier-league' | 'laliga'
-    seasons: List[int]        # single_year: years; two_year: start years
-    special_slugs: Dict[int, str] = None  # optional mapping start_year -> path
+    seasons: List[int]        # single_year: [2021, ...]; two_year: start years [2021,...]
+    special_slugs: Dict[int, str] = None  # optional mapping start_year -> "path-ending/"
 
     def start_url(self, start_year: int) -> str:
-        # explicit overrides first (Brazil 2024/2025)
+        # explicit overrides (Brazil 2024/2025)
         if self.special_slugs and start_year in self.special_slugs:
             return self.base + self.special_slugs[start_year]
         # single-year slugs
@@ -55,6 +55,7 @@ class LeagueConfig:
 
 BRAZIL = LeagueConfig(
     country="brazil",
+    league_name="Serie A Betano",
     base="https://www.oddsportal.com/football/brazil/",
     kind="single_year",
     comp_slug="serie-a",
@@ -63,17 +64,19 @@ BRAZIL = LeagueConfig(
 )
 ENGLAND = LeagueConfig(
     country="england",
+    league_name="Premier League",
     base="https://www.oddsportal.com/football/england/",
     kind="two_year",
     comp_slug="premier-league",
-    seasons=[2021, 2022, 2023, 2024, 2025],
+    seasons=[2021, 2022, 2023, 2024, 2025],  # 2025 -> 2025-2026 (no-year slug)
 )
 SPAIN = LeagueConfig(
     country="spain",
+    league_name="LaLiga",
     base="https://www.oddsportal.com/football/spain/",
     kind="two_year",
     comp_slug="laliga",
-    seasons=[2021, 2022, 2023, 2024, 2025],
+    seasons=[2021, 2022, 2023, 2024, 2025],  # 2025 -> 2025-2026 (no-year slug)
 )
 LEAGUES = [BRAZIL, ENGLAND, SPAIN]
 
@@ -254,6 +257,7 @@ def extract_odds_and_bs(row):
 @dataclass
 class MatchRow:
     country: str
+    league: str
     season_start: int
     page: int
     date_str: Optional[str]
@@ -267,7 +271,7 @@ class MatchRow:
     bets: Optional[str]
 
 # -------------------- Scrape page --------------------
-def collect_rows_on_page(driver, country: str, season_start: int, page_num: int) -> List[MatchRow]:
+def collect_rows_on_page(driver, country: str, league: str, season_start: int, page_num: int) -> List[MatchRow]:
     rows: List[MatchRow] = []
     scroll_to_bottom_until_stable(driver, expected_rows_per_page=50, min_stable_checks=2)
 
@@ -282,12 +286,14 @@ def collect_rows_on_page(driver, country: str, season_start: int, page_num: int)
             home, away, result = extract_teams_and_result(box)
             o1, ox, o2, bs = extract_odds_and_bs(box)
 
-            # ---- per-row console log ----
-            print(f"[{country}][{season_start}] p{page_num} | {date or '?'} {tm or '?'} | {home or '?'} vs {away or '?'} -> {result or '?'} | 1:{o1 or '?'} X:{ox or '?'} 2:{o2 or '?'} | bets:{bs or '?'}")
+            # per-row console log
+            print(f"[{country}][{league}][{season_start}] p{page_num} | {date or '?'} {tm or '?'} | "
+                  f"{home or '?'} vs {away or '?'} -> {result or '?'} | 1:{o1 or '?'} X:{ox or '?'} 2:{o2 or '?'} | bets:{bs or '?'}")
 
             rows.append(
                 MatchRow(
                     country=country,
+                    league=league,
                     season_start=season_start,
                     page=page_num,
                     date_str=date,
@@ -324,7 +330,7 @@ def _parse_time(t: Optional[str]):
 
 def _to_decimal(s: Optional[str]):
     if not s: return None
-    try: return Decimal(s)
+    try: return Decimal(s)  # stores American odds as negative/positive numbers; change if you want decimal odds conversion
     except Exception: return None
 
 def _to_int(s: Optional[str]):
@@ -337,6 +343,7 @@ def build_insert_values(rows: List[MatchRow]) -> List[Tuple]:
     for r in rows:
         vals.append((
             r.country,
+            r.league,
             r.season_start,
             _parse_date(r.date_str),
             _parse_time(r.time_str),
@@ -357,23 +364,24 @@ def insert_rows(conn, values: List[Tuple]):
         return
     sql = f"""
     INSERT INTO {SCHEMA}.{TABLE}
-    (country, season, "date", "time", home_team, away_team, result, half_first, half_second, odd_1, "odd_X", odd_2, bets)
+    (country, league, season, "date", "time", home_team, away_team, result, half_first, half_second, odd_1, "odd_X", odd_2, bets)
     VALUES %s
-    ON CONFLICT ON CONSTRAINT odds_unique_match DO NOTHING;
+    ON CONFLICT (country, league, season, "date", "time", home_team, away_team) DO NOTHING;
     """
-
     with conn.cursor() as cur:
         execute_values(cur, sql, values)
     conn.commit()
 
 # -------------------- Main --------------------
 def main(headless=True):
+    # Ensure your table has a UNIQUE constraint or index on:
+    # (country, league, season, "date", "time", home_team, away_team)
     conn = psycopg2.connect(**DB_CONFIG)
     driver = make_driver(headless=headless)
     try:
         for league in LEAGUES:
             for start_year in league.seasons:
-                print(f"\n=== {league.country.upper()} {start_year} ===")
+                print(f"\n=== {league.country.upper()} | {league.league_name} | {start_year} ===")
                 go_to_first_page(driver, league, start_year)
 
                 total_pages = get_total_pages(driver)
@@ -381,7 +389,7 @@ def main(headless=True):
                     page_idx = 1
                     while True:
                         print(f"-- Page {page_idx}")
-                        rows = collect_rows_on_page(driver, league.country, start_year, page_idx)
+                        rows = collect_rows_on_page(driver, league.country, league.league_name, start_year, page_idx)
                         insert_rows(conn, build_insert_values(rows))
                         if not click_next_page(driver):
                             break
@@ -389,7 +397,7 @@ def main(headless=True):
                 else:
                     for p in range(1, total_pages + 1):
                         print(f"-- Page {p}/{total_pages}")
-                        rows = collect_rows_on_page(driver, league.country, start_year, p)
+                        rows = collect_rows_on_page(driver, league.country, league.league_name, start_year, p)
                         insert_rows(conn, build_insert_values(rows))
                         if p < total_pages and not click_next_page(driver):
                             print("Next not found/disabled early; stopping this season.")
