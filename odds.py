@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, date as date_cls
 
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -24,7 +24,7 @@ DB_CONFIG = {
     "port":     5432,
     "dbname":   "sportsbetting",
     "user":     "postgres",
-    "password": "q1w2e3",     # <-- your current password
+    "password": "q1w2e3",
 }
 SCHEMA = "bettingschema"
 TABLE  = "odds"
@@ -36,22 +36,25 @@ class LeagueConfig:
     league_name: str          # 'Serie A Betano' | 'Premier League' | 'LaLiga'
     base: str                 # e.g. https://www.oddsportal.com/football/brazil/
     kind: str                 # 'single_year' | 'two_year'
-    comp_slug: str            # 'serie-a' | 'premier-league' | 'laliga'
-    seasons: List[int]        # single_year: [2021, ...]; two_year: start years [2021,...]
-    special_slugs: Dict[int, str] = None  # optional mapping start_year -> "path-ending/"
+    comp_slug: str            # slug used in results
+    seasons: List[int]        # single_year: [2021,...]  two_year: start years [2021,...]
+    next_slug: str            # slug used on "next matches" page (no /results/)
+    special_slugs: Dict[int, str] = None  # start_year -> "path-ending/"
 
     def start_url(self, start_year: int) -> str:
-        # explicit overrides (Brazil 2024/2025)
+        # explicit overrides (e.g., Brazil 2024/2025)
         if self.special_slugs and start_year in self.special_slugs:
             return self.base + self.special_slugs[start_year]
-        # single-year slugs
+        # single-year
         if self.kind == "single_year":
             return f"{self.base}{self.comp_slug}-{start_year}/results/"
-        # two-year slugs
+        # two-year
         if start_year >= 2025:
-            # current season page without years (e.g., premier-league/results/)
             return f"{self.base}{self.comp_slug}/results/"
         return f"{self.base}{self.comp_slug}-{start_year}-{start_year+1}/results/"
+
+    def next_matches_url(self) -> str:
+        return f"{self.base}{self.next_slug}/"
 
 BRAZIL = LeagueConfig(
     country="brazil",
@@ -60,24 +63,30 @@ BRAZIL = LeagueConfig(
     kind="single_year",
     comp_slug="serie-a",
     seasons=[2021, 2022, 2023, 2024, 2025],
+    next_slug="serie-a-betano",
     special_slugs={2024: "serie-a-betano-2024/results/", 2025: "serie-a-betano/results/"},
 )
+
 ENGLAND = LeagueConfig(
     country="england",
     league_name="Premier League",
     base="https://www.oddsportal.com/football/england/",
     kind="two_year",
     comp_slug="premier-league",
-    seasons=[2021, 2022, 2023, 2024, 2025],  # 2025 -> 2025-2026 (no-year slug)
+    seasons=[2021, 2022, 2023, 2024, 2025],
+    next_slug="premier-league",
 )
+
 SPAIN = LeagueConfig(
     country="spain",
     league_name="LaLiga",
     base="https://www.oddsportal.com/football/spain/",
     kind="two_year",
     comp_slug="laliga",
-    seasons=[2021, 2022, 2023, 2024, 2025],  # 2025 -> 2025-2026 (no-year slug)
+    seasons=[2021, 2022, 2023, 2024, 2025],
+    next_slug="laliga",
 )
+
 LEAGUES = [BRAZIL, ENGLAND, SPAIN]
 
 # -------------------- Selenium setup --------------------
@@ -119,6 +128,11 @@ def close_popups(driver):
 
 def go_to_first_page(driver, league: LeagueConfig, start_year: int):
     driver.get(league.start_url(start_year))
+    wait_for_results_table(driver)
+    close_popups(driver)
+
+def go_to_next_matches(driver, league: LeagueConfig):
+    driver.get(league.next_matches_url())
     wait_for_results_table(driver)
     close_popups(driver)
 
@@ -258,7 +272,7 @@ def extract_odds_and_bs(row):
 class MatchRow:
     country: str
     league: str
-    season_start: int
+    season_start: Optional[int]
     page: int
     date_str: Optional[str]
     time_str: Optional[str]
@@ -270,43 +284,92 @@ class MatchRow:
     odd_2: Optional[str]
     bets: Optional[str]
 
-# -------------------- Scrape page --------------------
-def collect_rows_on_page(driver, country: str, league: str, season_start: int, page_num: int) -> List[MatchRow]:
+# -------------------- Season helpers --------------------
+def infer_season_start(league: LeagueConfig, d: Optional[date_cls]) -> int:
+    if d is None:
+        d = datetime.today().date()
+    if league.kind == "single_year":
+        return d.year
+    # two-year season: Jul–Dec => start this year; Jan–Jun => start previous year
+    return d.year if d.month >= 7 else d.year - 1
+
+# -------------------- Scrape page (results pages; season known) --------------------
+def collect_rows_on_page(driver, country: str, league_name: str, season_start: int, page_num: int) -> List[MatchRow]:
     rows: List[MatchRow] = []
     scroll_to_bottom_until_stable(driver, expected_rows_per_page=50, min_stable_checks=2)
-
     row_boxes = driver.find_elements(
         By.XPATH,
         "//div[@data-testid='game-row']/ancestor::div[contains(@class,'group') and contains(@class,'flex')]"
     )
     for box in row_boxes:
         try:
-            date = extract_date_from_row(box)
+            date_s = extract_date_from_row(box)
             tm = extract_time(box)
             home, away, result = extract_teams_and_result(box)
             o1, ox, o2, bs = extract_odds_and_bs(box)
-
-            # per-row console log
-            print(f"[{country}][{league}][{season_start}] p{page_num} | {date or '?'} {tm or '?'} | "
+            print(f"[{country}][{league_name}][{season_start}] p{page_num} | {date_s or '?'} {tm or '?'} | "
                   f"{home or '?'} vs {away or '?'} -> {result or '?'} | 1:{o1 or '?'} X:{ox or '?'} 2:{o2 or '?'} | bets:{bs or '?'}")
+            rows.append(MatchRow(
+                country=country,
+                league=league_name,
+                season_start=season_start,
+                page=page_num,
+                date_str=date_s,
+                time_str=tm,
+                home_team=home,
+                away_team=away,
+                result=result,
+                odd_1=o1,
+                odd_X=ox,
+                odd_2=o2,
+                bets=bs,
+            ))
+        except StaleElementReferenceException:
+            continue
+        except Exception:
+            continue
+    return rows
 
-            rows.append(
-                MatchRow(
-                    country=country,
-                    league=league,
-                    season_start=season_start,
-                    page=page_num,
-                    date_str=date,
-                    time_str=tm,
-                    home_team=home,
-                    away_team=away,
-                    result=result,
-                    odd_1=o1,
-                    odd_X=ox,
-                    odd_2=o2,
-                    bets=bs,
-                )
-            )
+# -------------------- Scrape page (next matches; season inferred per row) --------------------
+def collect_rows_on_page_dynamic_season(driver, league: LeagueConfig, page_num: int) -> List[MatchRow]:
+    rows: List[MatchRow] = []
+    scroll_to_bottom_until_stable(driver, expected_rows_per_page=50, min_stable_checks=2)
+    row_boxes = driver.find_elements(
+        By.XPATH,
+        "//div[@data-testid='game-row']/ancestor::div[contains(@class,'group') and contains(@class,'flex')]"
+    )
+    for box in row_boxes:
+        try:
+            date_s = extract_date_from_row(box)
+            dt = None
+            try:
+                dt = datetime.strptime((date_s or "").strip(), "%d %b %Y").date()
+            except Exception:
+                dt = None
+            season_start = infer_season_start(league, dt)
+
+            tm = extract_time(box)
+            home, away, result = extract_teams_and_result(box)  # likely None -> OK
+            o1, ox, o2, bs = extract_odds_and_bs(box)
+
+            print(f"[{league.country}][{league.league_name}][{season_start}] p{page_num} | {date_s or '?'} {tm or '?'} | "
+                  f"{home or '?'} vs {away or '?'} -> {result or '-'} | 1:{o1 or '-'} X:{ox or '-'} 2:{o2 or '-'} | bets:{bs or '-'}")
+
+            rows.append(MatchRow(
+                country=league.country,
+                league=league.league_name,
+                season_start=season_start,
+                page=page_num,
+                date_str=date_s,
+                time_str=tm,
+                home_team=home,
+                away_team=away,
+                result=result,  # can be None for upcoming
+                odd_1=o1,
+                odd_X=ox,
+                odd_2=o2,
+                bets=bs,
+            ))
         except StaleElementReferenceException:
             continue
         except Exception:
@@ -330,7 +393,7 @@ def _parse_time(t: Optional[str]):
 
 def _to_decimal(s: Optional[str]):
     if not s: return None
-    try: return Decimal(s)  # stores American odds as negative/positive numbers; change if you want decimal odds conversion
+    try: return Decimal(s)  # handles +238 / -108 as numeric
     except Exception: return None
 
 def _to_int(s: Optional[str]):
@@ -344,7 +407,7 @@ def build_insert_values(rows: List[MatchRow]) -> List[Tuple]:
         vals.append((
             r.country,
             r.league,
-            r.season_start,
+            int(r.season_start) if r.season_start is not None else None,
             _parse_date(r.date_str),
             _parse_time(r.time_str),
             (r.home_team or None),
@@ -374,14 +437,13 @@ def insert_rows(conn, values: List[Tuple]):
 
 # -------------------- Main --------------------
 def main(headless=True):
-    # Ensure your table has a UNIQUE constraint or index on:
-    # (country, league, season, "date", "time", home_team, away_team)
     conn = psycopg2.connect(**DB_CONFIG)
     driver = make_driver(headless=headless)
     try:
+        # 1) RESULTS pages by season
         for league in LEAGUES:
             for start_year in league.seasons:
-                print(f"\n=== {league.country.upper()} | {league.league_name} | {start_year} ===")
+                print(f"\n=== RESULTS: {league.country.upper()} | {league.league_name} | {start_year} ===")
                 go_to_first_page(driver, league, start_year)
 
                 total_pages = get_total_pages(driver)
@@ -402,6 +464,31 @@ def main(headless=True):
                         if p < total_pages and not click_next_page(driver):
                             print("Next not found/disabled early; stopping this season.")
                             break
+
+        # 2) NEXT MATCHES pages (upcoming fixtures; result may be empty)
+        for league in LEAGUES:
+            print(f"\n=== NEXT MATCHES: {league.country.upper()} | {league.league_name} ===")
+            go_to_next_matches(driver, league)
+
+            total_pages = get_total_pages(driver)
+            if total_pages is None:
+                page_idx = 1
+                while True:
+                    print(f"-- Page {page_idx}")
+                    rows = collect_rows_on_page_dynamic_season(driver, league, page_idx)
+                    insert_rows(conn, build_insert_values(rows))
+                    if not click_next_page(driver):
+                        break
+                    page_idx += 1
+            else:
+                for p in range(1, total_pages + 1):
+                    print(f"-- Page {p}/{total_pages}")
+                    rows = collect_rows_on_page_dynamic_season(driver, league, p)
+                    insert_rows(conn, build_insert_values(rows))
+                    if p < total_pages and not click_next_page(driver):
+                        print("Next not found/disabled early; stopping next-matches pagination.")
+                        break
+
     finally:
         try: driver.quit()
         except Exception: pass
