@@ -88,8 +88,8 @@ LEAGUES: List[LeagueConfig] = [
     # BRAZIL, ENGLAND, SPAIN,
     # GERMANY, ITALY, FRANCE,
     # PORTUGAL, NETHERLANDS, BELGIUM, TURKEY, 
-    RUSSIA, UKRAINE, POLAND, AUSTRIA, SWITZERLAND, 
-    ARGENTINA, CZECH,
+    # RUSSIA, UKRAINE, POLAND, AUSTRIA, SWITZERLAND, 
+    ARGENTINA, CZECH, 
 ]
 
 # -------------------- Selenium setup --------------------
