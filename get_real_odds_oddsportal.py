@@ -4,7 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 from decimal import Decimal
-from datetime import datetime, date as date_cls
+from datetime import datetime, date
+
 
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -21,13 +22,13 @@ from psycopg2.extras import execute_values
 
 # -------------------- DB CONFIG --------------------
 DB_CONFIG = {
-    "host":     "127.0.0.1",
+    "host":     "ep-empty-term-adh8v9zs-pooler.c-2.us-east-1.aws.neon.tech",
     "port":     5432,
     "dbname":   "sportsbetting",
-    "user":     "postgres",
-    "password": "q1w2e3",
+    "user":     "neondb_owner",
+    "password": "npg_ZdRSbgLjv5s6",
 }
-SCHEMA = "bettingschema"
+
 TABLE  = "odds"
 
 # -------------------- League configuration --------------------
@@ -72,7 +73,7 @@ SPAIN   = LeagueConfig("spain",   "LaLiga",          "https://www.oddsportal.com
 GERMANY = LeagueConfig("germany", "Bundesliga",      "https://www.oddsportal.com/football/germany/","two_year", "bundesliga",      [2021, 2022, 2023, 2024, 2025])
 ITALY   = LeagueConfig("italy",   "Serie A",         "https://www.oddsportal.com/football/italy/",  "two_year", "serie-a",         [2021, 2022, 2023, 2024, 2025])
 FRANCE  = LeagueConfig("france",  "Ligue 1",         "https://www.oddsportal.com/football/france/", "two_year", "ligue-1",         [2021, 2022, 2023, 2024, 2025])
-ARGENTINA = LeagueConfig("argentina","Torneo Betano","https://www.oddsportal.com/football/argentina/","single_year","torneo-betano",[2021, 2022, 2023, 2024, 2025])
+# ARGENTINA = LeagueConfig("argentina","Torneo Betano","https://www.oddsportal.com/football/argentina/","single_year","torneo-betano",[2021, 2022, 2023, 2024, 2025])
 PORTUGAL  = LeagueConfig("portugal","Liga Portugal", "https://www.oddsportal.com/football/portugal/","two_year","liga-portugal",[2021, 2022, 2023, 2024, 2025])
 NETHERLANDS = LeagueConfig("netherlands","Eredivisie","https://www.oddsportal.com/football/netherlands/","two_year","eredivisie",[2021, 2022, 2023, 2024, 2025])
 BELGIUM  = LeagueConfig("belgium","Jupiler Pro League","https://www.oddsportal.com/football/belgium/","two_year","jupiler-pro-league",[2021, 2022, 2023, 2024, 2025])
@@ -80,7 +81,7 @@ TURKEY   = LeagueConfig("turkey","Super Lig","https://www.oddsportal.com/footbal
 RUSSIA   = LeagueConfig("russia","Premier League","https://www.oddsportal.com/football/russia/","two_year","premier-league",[2021, 2022, 2023, 2024, 2025])
 UKRAINE  = LeagueConfig("ukraine","Premier League","https://www.oddsportal.com/football/ukraine/","two_year","premier-league",[2021, 2022, 2023, 2024, 2025])
 POLAND   = LeagueConfig("poland","Ekstraklasa","https://www.oddsportal.com/football/poland/","two_year","ekstraklasa",[2021, 2022, 2023, 2024, 2025])
-CZECH    = LeagueConfig("czech-republic","Fortuna Liga","https://www.oddsportal.com/football/czech-republic/","two_year","fortuna-liga",[2021, 2022, 2023, 2024, 2025])
+# CZECH    = LeagueConfig("czech-republic","Fortuna Liga","https://www.oddsportal.com/football/czech-republic/","two_year","fortuna-liga",[2021, 2022, 2023, 2024, 2025])
 AUSTRIA  = LeagueConfig("austria","Bundesliga","https://www.oddsportal.com/football/austria/","two_year","bundesliga",[2021, 2022, 2023, 2024, 2025])
 SWITZERLAND = LeagueConfig("switzerland","Super League","https://www.oddsportal.com/football/switzerland/","two_year","super-league",[2021, 2022, 2023, 2024, 2025])
 
@@ -89,7 +90,6 @@ LEAGUES: List[LeagueConfig] = [
     GERMANY, ITALY, FRANCE,
     PORTUGAL, NETHERLANDS, BELGIUM, TURKEY, 
     RUSSIA, UKRAINE, POLAND, AUSTRIA, SWITZERLAND, 
-    ARGENTINA, CZECH, 
 ]
 
 # -------------------- Selenium setup --------------------
@@ -327,7 +327,7 @@ class MatchRow:
     bets: Optional[str]
 
 # -------------------- Season helpers --------------------
-def infer_season_start(league: LeagueConfig, d: Optional[date_cls]) -> int:
+def infer_season_start(league: LeagueConfig, d: Optional[date]) -> int:
     if d is None:
         d = datetime.today().date()
     if league.kind == "single_year":
@@ -450,7 +450,7 @@ def insert_rows(conn, values: List[Tuple]):
     if not values:
         return
     sql = f"""
-    INSERT INTO {SCHEMA}.{TABLE}
+    INSERT INTO {TABLE}
     (country, league, season, "date", "time", home_team, away_team, result, half_first, half_second, odd_1, "odd_X", odd_2, bets)
     VALUES %s
     ON CONFLICT (country, league, season, "date", "time", home_team, away_team) DO NOTHING;
