@@ -15,7 +15,14 @@ class PredictRequest(BaseModel):
 @app.post("/predict")
 def predict(req: PredictRequest):
     try:
-        result = prepare_single_match_features(req.home_team, req.away_team, req.league, req.country, req.date)
+        result = prepare_single_match_features(
+            req.home_team, req.away_team, req.league, req.country, req.date
+        )
         return {"success": True, **result}
     except Exception as e:
-        return JSONResponse({"success": False, "error": str(e), "p_home": None, "p_draw": None, "p_away": None}, status_code=200)
+        return JSONResponse(
+            {"success": False, "error": str(e),
+             "p_home": None, "p_draw": None, "p_away": None,
+             "odd_1": None, "odd_X": None, "odd_2": None},
+            status_code=200
+        )
