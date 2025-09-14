@@ -26,3 +26,13 @@ def predict(req: PredictRequest):
              "odd_1": None, "odd_X": None, "odd_2": None},
             status_code=200
         )
+
+from .predict import prepare_single_match_features, prepare_upcoming_matches
+
+@app.get("/predict_upcoming")
+def predict_upcoming(limit: int = 50):
+    try:
+        result = prepare_upcoming_matches(limit=limit)
+        return {"success": True, "matches": result}
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=200)

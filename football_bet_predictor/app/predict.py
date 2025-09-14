@@ -104,3 +104,77 @@ def prepare_single_match_features(home, away, league, country, match_date, n_las
         'odd_draw_american': fair_american[1],
         'odd_away_american': fair_american[2]
     }
+
+def prepare_upcoming_matches(n_last=5, limit=50):
+    """
+    Compute probabilities + fair odds for all upcoming matches (date >= today).
+    """
+    today = pd.Timestamp.today().normalize()
+
+    # 1️⃣ Load historical matches
+    sql = text("""
+        SELECT season, date, time, home_team, away_team, result, odd_1, "odd_X", odd_2, bets, country, league
+        FROM bettingschema.odds
+        ORDER BY date ASC
+    """)
+    with engine.connect() as conn:
+        df = pd.read_sql(sql, conn)
+
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+
+    # 2️⃣ Split past vs upcoming
+    past = df[df['date'] < today]
+    upcoming = df[df['date'] >= today].sort_values("date")
+
+    # Safety limit
+    upcoming = upcoming.head(limit)
+
+    results = []
+    model, used_features, le_country, le_league = load_artifacts()
+
+    # 3️⃣ Loop upcoming matches
+    for _, row in upcoming.iterrows():
+        hist = pd.concat([past, pd.DataFrame([row])], ignore_index=True)
+        hist = hist.sort_values('date').reset_index(drop=True)
+
+        df_feats, feat_cols = compute_features(hist, n_last=n_last)
+        match_row = df_feats.iloc[-1].copy()
+
+        # Encode
+        match_row['country_enc'] = (
+            le_country.transform([str(match_row['country'])])[0]
+            if str(match_row['country']) in le_country.classes_ else -1
+        )
+        match_row['league_enc'] = (
+            le_league.transform([str(match_row['league'])])[0]
+            if str(match_row['league']) in le_league.classes_ else -1
+        )
+
+        # Predict
+        X = match_row[used_features].fillna(0).values.reshape(1, -1)
+        dmat = xgb.DMatrix(X, feature_names=used_features)
+        proba = model.predict(dmat)[0]
+
+        # Fair odds
+        fair_decimal = [1/p if p > 0 else None for p in proba]
+        fair_american = [decimal_to_american(d) if d else None for d in fair_decimal]
+
+        results.append({
+            "date": str(row["date"].date()),
+            "home_team": row["home_team"],
+            "away_team": row["away_team"],
+            "league": row["league"],
+            "country": row["country"],
+            "p_home": float(proba[0]),
+            "p_draw": float(proba[1]),
+            "p_away": float(proba[2]),
+            "odd_home_american": fair_american[0],
+            "odd_draw_american": fair_american[1],
+            "odd_away_american": fair_american[2],
+            "odd_home_bookmaker": row.get("odd_1"),
+            "odd_draw_bookmaker": row.get("odd_X"),
+            "odd_away_bookmaker": row.get("odd_2")
+        })
+
+    return results
+
