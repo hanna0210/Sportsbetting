@@ -6,7 +6,7 @@ url = "http://127.0.0.1:8000/predict"
 url_upcoming = "http://127.0.0.1:8000/predict_upcoming"
 
 # Example: Get all upcoming matches
-resp = requests.get(url_upcoming, params={"limit": 20})
+resp = requests.get(url_upcoming, params={"limit": 5})
 data = resp.json()
 
 if not data.get("success", False):
